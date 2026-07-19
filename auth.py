@@ -1,71 +1,85 @@
-import bcrypt
-from jose import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 from config import (
-    SECRET_KEY,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
     ALGORITHM,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    SECRET_KEY,
+)
+from database import users_collection
+
+password_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
 )
 
-
-# ------------------------
-# Hash Password
-# ------------------------
-
-def hash_password(password: str):
-
-    return bcrypt.hashpw(
-        password.encode(),
-        bcrypt.gensalt()
-    ).decode()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 
-# ------------------------
-# Verify Password
-# ------------------------
-
-def verify_password(plain_password, hashed_password):
-
-    return bcrypt.checkpw(
-        plain_password.encode(),
-        hashed_password.encode()
-    )
+def hash_password(password: str) -> str:
+    return password_context.hash(password)
 
 
-# ------------------------
-# Create JWT
-# ------------------------
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return password_context.verify(plain_password, hashed_password)
 
-def create_access_token(data: dict):
 
+def create_access_token(data: dict[str, Any]) -> str:
     payload = data.copy()
 
-    expire = datetime.utcnow() + timedelta(
+    expire = datetime.now(timezone.utc) + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
 
-    payload["exp"] = expire
+    payload.update({"exp": expire})
 
-    token = jwt.encode(
+    return jwt.encode(
         payload,
         SECRET_KEY,
-        algorithm=ALGORITHM
+        algorithm=ALGORITHM,
     )
 
-    return token
 
-
-# ------------------------
-# Decode JWT
-# ------------------------
-
-def verify_token(token: str):
-
-    payload = jwt.decode(
-        token,
-        SECRET_KEY,
-        algorithms=[ALGORITHM]
+def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired authentication token.",
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
-    return payload
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+        )
+
+        email = payload.get("sub")
+
+        if not email:
+            raise credentials_exception
+
+    except JWTError as exc:
+        raise credentials_exception from exc
+
+    user = users_collection.find_one({"email": email})
+
+    if not user:
+        raise credentials_exception
+
+    return user
+
+
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access is required.",
+        )
+
+    return current_user

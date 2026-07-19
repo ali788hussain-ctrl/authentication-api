@@ -1,10 +1,17 @@
 from pymongo import MongoClient
-from config import MONGO_URI, DATABASE_NAME
+from pymongo.errors import PyMongoError
 
-client = MongoClient(MONGO_URI)
+from config import DATABASE_NAME, MONGO_URI
 
-db = client[DATABASE_NAME]
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 
-users = db["users"]
+database = client[DATABASE_NAME]
+users_collection = database["users"]
 
-print("MongoDB Connected")
+
+def check_database_connection() -> bool:
+    try:
+        client.admin.command("ping")
+        return True
+    except PyMongoError:
+        return False
